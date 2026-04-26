@@ -7,6 +7,11 @@ import subprocess
 import webbrowser
 from pathlib import Path
 
+try:
+    from yt_dlp import YoutubeDL
+except ModuleNotFoundError:  # pragma: no cover - optional until installed
+    YoutubeDL = None
+
 from .models import AssistantResponse
 
 
@@ -66,9 +71,15 @@ class AutomationModule:
             message = f"Playing {query} on Spotify."
             action = "play_music_spotify"
         else:
-            url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
-            message = f"Playing {query} on YouTube."
-            action = "play_music_youtube"
+            url = self._resolve_youtube_video_url(query) or (
+                f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+            )
+            if "watch?v=" in url:
+                message = f"Playing {query} on YouTube."
+                action = "play_music_youtube"
+            else:
+                message = f"I could not resolve the exact YouTube video, so I opened search results for {query}."
+                action = "play_music_youtube_search"
 
         webbrowser.open(url)
         return AssistantResponse(
@@ -76,6 +87,33 @@ class AutomationModule:
             action=action,
             payload={"song_query": query, "platform": normalized_platform, "url": url},
         )
+
+    @staticmethod
+    def _resolve_youtube_video_url(query: str) -> str | None:
+        """Resolve the top YouTube result to a direct watch URL."""
+        if YoutubeDL is None:
+            return None
+
+        options = {
+            "quiet": True,
+            "skip_download": True,
+            "extract_flat": True,
+        }
+        try:
+            with YoutubeDL(options) as ydl:
+                result = ydl.extract_info(f"ytsearch1:{query}", download=False)
+        except Exception:
+            return None
+
+        entries = result.get("entries") if isinstance(result, dict) else None
+        if not entries:
+            return None
+
+        first = entries[0]
+        video_id = first.get("id")
+        if not video_id:
+            return None
+        return f"https://www.youtube.com/watch?v={video_id}"
 
     def handle_file_operation(self, query: str) -> AssistantResponse:
         """Process simple file and folder commands."""

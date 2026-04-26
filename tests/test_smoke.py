@@ -121,9 +121,18 @@ class AutomationModuleTests(unittest.TestCase):
 
     def test_play_music_opens_platform_search(self) -> None:
         module = AutomationModule()
-        with mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
+        with mock.patch.object(module, "_resolve_youtube_video_url", return_value="https://www.youtube.com/watch?v=abc123"), \
+             mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
             response = module.play_music("believer", "youtube")
         self.assertEqual(response.action, "play_music_youtube")
+        web_open.assert_called_once()
+
+    def test_play_music_falls_back_to_youtube_search_when_direct_resolution_fails(self) -> None:
+        module = AutomationModule()
+        with mock.patch.object(module, "_resolve_youtube_video_url", return_value=None), \
+             mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
+            response = module.play_music("believer", "youtube")
+        self.assertEqual(response.action, "play_music_youtube_search")
         web_open.assert_called_once()
 
 
