@@ -26,6 +26,7 @@ class JarvisAssistant:
         "open_application": 0.25,
         "weather_query": 0.25,
         "news_query": 0.25,
+        "play_music": 0.25,
         "set_reminder": 0.25,
         "schedule_calendar": 0.25,
         "file_operation": 0.25,
@@ -178,6 +179,12 @@ class JarvisAssistant:
 
         if intent == "news_query":
             return self._handle_news(entities.get("topic"))
+
+        if intent == "play_music":
+            return self.automation.play_music(
+                song_query=entities.get("song_query", "music"),
+                platform=entities.get("platform", "youtube"),
+            )
 
         if intent == "set_reminder":
             return self._handle_reminder(entities)

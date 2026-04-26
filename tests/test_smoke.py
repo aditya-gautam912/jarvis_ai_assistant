@@ -29,6 +29,7 @@ class NLPEngineTests(unittest.TestCase):
         self.assertEqual(engine.predict("open notepad").intent, "open_application")
         self.assertEqual(engine.predict("tell me the weather in delhi").intent, "weather_query")
         self.assertEqual(engine.predict("tell me the latest news").intent, "news_query")
+        self.assertEqual(engine.predict("play believer on youtube").intent, "play_music")
 
 
 class APIServiceTests(unittest.TestCase):
@@ -118,6 +119,13 @@ class AutomationModuleTests(unittest.TestCase):
             self.assertEqual(folder_response.action, "create_folder")
             self.assertTrue((fake_home / "Desktop" / "JarvisFolder").exists())
 
+    def test_play_music_opens_platform_search(self) -> None:
+        module = AutomationModule()
+        with mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
+            response = module.play_music("believer", "youtube")
+        self.assertEqual(response.action, "play_music_youtube")
+        web_open.assert_called_once()
+
 
 class AnalyticsTests(unittest.TestCase):
     def test_usage_summary_reports_expected_metrics(self) -> None:
@@ -193,6 +201,26 @@ class PreferencesStoreTests(unittest.TestCase):
 
 
 class AssistantTests(unittest.TestCase):
+    def test_play_music_dispatch_uses_automation(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.automation = mock.Mock()
+        assistant.automation.play_music.return_value = AssistantResponse(
+            message="Playing believer on YouTube.",
+            action="play_music_youtube",
+        )
+
+        response = assistant._dispatch(
+            "play_music",
+            {"song_query": "believer", "platform": "youtube"},
+            "play believer on youtube",
+        )
+
+        self.assertEqual(response.action, "play_music_youtube")
+        assistant.automation.play_music.assert_called_once_with(
+            song_query="believer",
+            platform="youtube",
+        )
+
     def test_supported_low_confidence_intent_still_dispatches(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
         assistant.nlp = mock.Mock()

@@ -102,6 +102,19 @@ class NLPEngine:
             if match:
                 entities["topic"] = match.group(1).strip()
 
+        if intent == "play_music":
+            if "spotify" in text:
+                entities["platform"] = "spotify"
+            elif "youtube" in text:
+                entities["platform"] = "youtube"
+            else:
+                entities["platform"] = "youtube"
+
+            song_query = re.sub(r"^(play|start|open|put on)\s+", "", text).strip()
+            song_query = re.sub(r"\s+on\s+(youtube|spotify)\s*$", "", song_query).strip()
+            song_query = song_query.replace("the song", "").replace("song", "").replace("music", "").strip()
+            entities["song_query"] = song_query or "music"
+
         if intent in {"set_reminder", "schedule_calendar"}:
             time_match = re.search(
                 r"(today|tomorrow|next\s+\w+|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",

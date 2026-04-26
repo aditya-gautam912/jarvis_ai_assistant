@@ -56,6 +56,27 @@ class AutomationModule:
             payload={"query": query},
         )
 
+    def play_music(self, song_query: str, platform: str = "youtube") -> AssistantResponse:
+        """Open a music search on the requested platform."""
+        normalized_platform = platform.strip().lower()
+        query = song_query.strip() or "music"
+
+        if normalized_platform == "spotify":
+            url = f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
+            message = f"Playing {query} on Spotify."
+            action = "play_music_spotify"
+        else:
+            url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+            message = f"Playing {query} on YouTube."
+            action = "play_music_youtube"
+
+        webbrowser.open(url)
+        return AssistantResponse(
+            message=message,
+            action=action,
+            payload={"song_query": query, "platform": normalized_platform, "url": url},
+        )
+
     def handle_file_operation(self, query: str) -> AssistantResponse:
         """Process simple file and folder commands."""
         normalized = query.lower()
