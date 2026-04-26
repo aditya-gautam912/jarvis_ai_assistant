@@ -193,6 +193,26 @@ class PreferencesStoreTests(unittest.TestCase):
 
 
 class AssistantTests(unittest.TestCase):
+    def test_supported_low_confidence_intent_still_dispatches(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.nlp = mock.Mock()
+        assistant.automation = mock.Mock()
+        assistant.nlp.predict.return_value = SimpleNamespace(
+            intent="open_application",
+            confidence=0.40,
+            normalized_text="open notepad",
+            entities={"application": "notepad"},
+        )
+        assistant.automation.open_application.return_value = AssistantResponse(
+            message="Opening notepad.",
+            action="open_application",
+        )
+
+        response = assistant.handle_command("open notepad")
+
+        self.assertEqual(response.action, "open_application")
+        assistant.automation.open_application.assert_called_once_with("notepad")
+
     def test_low_confidence_commands_fall_back_to_search(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
         assistant.nlp = mock.Mock()

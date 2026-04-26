@@ -2,6 +2,7 @@
 credentials.json
 token.json
 logs/
+storage/
 __pycache__/
 *.pyc
 *.pyo

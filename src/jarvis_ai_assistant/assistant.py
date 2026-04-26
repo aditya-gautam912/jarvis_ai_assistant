@@ -20,6 +20,18 @@ LOGGER = logging.getLogger(__name__)
 class JarvisAssistant:
     """Coordinates voice, NLP, APIs, automation, and analytics."""
 
+    INTENT_CONFIDENCE_FLOORS = {
+        "greeting": 0.0,
+        "exit": 0.0,
+        "open_application": 0.25,
+        "weather_query": 0.25,
+        "news_query": 0.25,
+        "set_reminder": 0.25,
+        "schedule_calendar": 0.25,
+        "file_operation": 0.25,
+        "general_query": 0.20,
+    }
+
     def __init__(self, enable_voice: bool = True, voice_device_index: int | None = None) -> None:
         self.voice = None
         self.voice_device_index = voice_device_index
@@ -122,7 +134,7 @@ class JarvisAssistant:
         """Handle a text command from voice or keyboard input."""
         result = self.nlp.predict(command)
 
-        if result.confidence < SETTINGS.confidence_threshold and result.intent not in {"exit", "greeting"}:
+        if not self._meets_confidence_threshold(result.intent, result.confidence):
             response = self.automation.search_web(command)
             self._log_interaction(command, result.intent, result.confidence, response)
             return AssistantResponse(
@@ -137,6 +149,11 @@ class JarvisAssistant:
         response = self._dispatch(result.intent, result.entities, result.normalized_text)
         self._log_interaction(command, result.intent, result.confidence, response)
         return response
+
+    def _meets_confidence_threshold(self, intent: str, confidence: float) -> bool:
+        """Apply realistic per-intent confidence floors instead of one global cutoff."""
+        minimum = self.INTENT_CONFIDENCE_FLOORS.get(intent, SETTINGS.confidence_threshold)
+        return confidence >= minimum
 
     def _dispatch(self, intent: str, entities: dict[str, str], text: str) -> AssistantResponse:
         if intent == "greeting":
