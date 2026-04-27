@@ -25,6 +25,7 @@ class AssistantResponse:
     success: bool = True
     action: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    should_speak: bool = True
 
 
 @dataclass(slots=True)

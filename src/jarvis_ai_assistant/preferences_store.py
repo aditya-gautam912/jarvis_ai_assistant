@@ -16,6 +16,8 @@ class PreferencesStore:
         "notifications_enabled": True,
         "popup_notifications": True,
         "reminder_poll_seconds": 20,
+        "require_wake_word": True,
+        "continuous_listening": False,
     }
 
     def __init__(self, storage_path: Path | None = None) -> None:

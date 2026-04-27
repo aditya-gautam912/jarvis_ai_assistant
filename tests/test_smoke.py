@@ -17,6 +17,7 @@ from src.jarvis_ai_assistant.models import AssistantResponse, InteractionRecord
 from src.jarvis_ai_assistant.nlp_engine import NLPEngine
 from src.jarvis_ai_assistant.preferences_store import PreferencesStore
 from src.jarvis_ai_assistant.reminder_store import ReminderStore
+from src.jarvis_ai_assistant.voice_module import VoiceModule
 
 
 class NLPEngineTests(unittest.TestCase):
@@ -205,6 +206,18 @@ class ReminderStoreTests(unittest.TestCase):
         self.assertEqual(len(due_before), 1)
         self.assertEqual(len(due_after), 0)
 
+    def test_complete_and_snooze_reminder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ReminderStore(storage_path=Path(temp_dir) / "reminders.json")
+            reminder = store.add_reminder("team meeting", "tomorrow 9 am")
+            snoozed = store.snooze_reminder(reminder.id, minutes=10)
+            completed = store.complete_reminder(reminder.id)
+            upcoming = store.list_upcoming()
+
+        self.assertIsNotNone(snoozed)
+        self.assertTrue(completed.completed)
+        self.assertEqual(upcoming, [])
+
 
 class PreferencesStoreTests(unittest.TestCase):
     def test_preferences_persist(self) -> None:
@@ -226,6 +239,35 @@ class PreferencesStoreTests(unittest.TestCase):
 
 
 class AssistantTests(unittest.TestCase):
+    def test_memory_rules_return_recent_commands(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.automation = mock.Mock()
+        assistant.automation.open_application.return_value = AssistantResponse(
+            message="Opening notepad.",
+            action="open_application",
+        )
+        assistant.handle_command("open notepad")
+        response = assistant.handle_command("show recent commands")
+        self.assertEqual(response.action, "memory_query")
+        self.assertIn("open notepad", response.message)
+
+    def test_reminder_rule_actions(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.reminders = mock.Mock()
+        assistant.reminders.list_upcoming.return_value = [SimpleNamespace(id="r1", subject="pay rent")]
+        assistant.reminders.complete_reminder.return_value = SimpleNamespace(id="r1", subject="pay rent")
+        assistant.reminders.snooze_reminder.return_value = SimpleNamespace(
+            id="r1",
+            subject="pay rent",
+            scheduled_for=datetime(2026, 4, 27, 12, 15, 0),
+        )
+
+        completed = assistant.handle_command("complete reminder")
+        snoozed = assistant.handle_command("snooze reminder for 15 minutes")
+
+        self.assertEqual(completed.action, "complete_reminder")
+        self.assertEqual(snoozed.action, "snooze_reminder")
+
     def test_play_music_dispatch_uses_automation(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
         assistant.automation = mock.Mock()
@@ -353,6 +395,9 @@ class GUISmokeTests(unittest.TestCase):
             upcoming_reminders=lambda: ["No upcoming reminders."],
             due_reminders=lambda: [],
             mark_reminder_notified=lambda _id: None,
+            complete_next_reminder=lambda: AssistantResponse(message="Completed reminder."),
+            snooze_next_reminder=lambda minutes=15: AssistantResponse(message="Snoozed reminder."),
+            preprocess_voice_command=lambda heard_text, require_wake_word: (heard_text, None),
             configure_voice=lambda enabled, device_index=None: False,
             nlp=mock.Mock(),
             handle_command=mock.Mock(return_value=AssistantResponse(message="ok")),
@@ -381,6 +426,13 @@ class GUISmokeTests(unittest.TestCase):
                 self.assertIsNotNone(app.meter_button)
             finally:
                 app.root.destroy()
+
+
+class VoiceModuleTests(unittest.TestCase):
+    def test_strip_wake_word(self) -> None:
+        self.assertEqual(VoiceModule.strip_wake_word("jarvis open notepad", "jarvis"), "open notepad")
+        self.assertEqual(VoiceModule.strip_wake_word("jarvis, play believer", "jarvis"), "play believer")
+        self.assertIsNone(VoiceModule.strip_wake_word("open notepad", "jarvis"))
 
 
 if __name__ == "__main__":

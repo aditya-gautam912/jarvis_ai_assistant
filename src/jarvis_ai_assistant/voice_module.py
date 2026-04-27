@@ -70,6 +70,21 @@ class VoiceModule:
             LOGGER.exception("Speech recognition request failed: %s", exc)
             return None
 
+    @staticmethod
+    def strip_wake_word(text: str, wake_word: str) -> str | None:
+        """Return the command text after the wake word, if present."""
+        normalized = text.strip().lower()
+        wake = wake_word.strip().lower()
+        if not wake:
+            return normalized
+        if normalized == wake:
+            return ""
+        if normalized.startswith(f"{wake} "):
+            return normalized[len(wake) + 1 :].strip()
+        if normalized.startswith(f"{wake},"):
+            return normalized[len(wake) + 1 :].strip()
+        return None
+
     @classmethod
     def describe_environment(cls) -> dict[str, Any]:
         """Report microphone and speech-stack availability for UI diagnostics."""

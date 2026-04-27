@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 
 from .analytics import InteractionAnalytics
@@ -46,6 +47,7 @@ class JarvisAssistant:
         self.automation = AutomationModule()
         self.analytics = InteractionAnalytics()
         self.reminders = ReminderStore()
+        self.memory: list[dict[str, str]] = []
 
     def configure_voice(self, enabled: bool, device_index: int | None = None) -> bool:
         """Reinitialize voice support with the requested microphone."""
@@ -103,6 +105,21 @@ class JarvisAssistant:
             raise OSError("Voice module is disabled.")
         return self.voice.listen()
 
+    def preprocess_voice_command(self, heard_text: str, require_wake_word: bool) -> tuple[str | None, str | None]:
+        """Apply wake-word gating to captured voice text."""
+        normalized = heard_text.strip()
+        if not normalized:
+            return None, "I did not hear any command."
+        if not require_wake_word:
+            return normalized, None
+
+        stripped = VoiceModule.strip_wake_word(normalized, SETTINGS.wake_word)
+        if stripped is None:
+            return None, f"Wake word '{SETTINGS.wake_word}' was not detected."
+        if not stripped:
+            return None, "Wake word detected. Please say a command after it."
+        return stripped, None
+
     def speak(self, message: str) -> None:
         """Speak a response when voice support is available."""
         if self.voice is not None:
@@ -131,13 +148,50 @@ class JarvisAssistant:
         """Mark a reminder as already shown to the user."""
         self.reminders.mark_notified(reminder_id)
 
+    def complete_next_reminder(self) -> AssistantResponse:
+        """Complete the next upcoming reminder."""
+        reminders = self.reminders.list_upcoming(limit=1)
+        if not reminders:
+            return AssistantResponse(message="There are no upcoming reminders to complete.", success=False)
+        reminder = self.reminders.complete_reminder(reminders[0].id)
+        return AssistantResponse(
+            message=f"Completed reminder: {reminder.subject}.",
+            action="complete_reminder",
+            payload={"reminder_id": reminder.id},
+        )
+
+    def snooze_next_reminder(self, minutes: int = 15) -> AssistantResponse:
+        """Snooze the next upcoming reminder."""
+        reminders = self.reminders.list_upcoming(limit=1)
+        if not reminders:
+            return AssistantResponse(message="There are no upcoming reminders to snooze.", success=False)
+        reminder = self.reminders.snooze_reminder(reminders[0].id, minutes=minutes)
+        return AssistantResponse(
+            message=(
+                f"Snoozed reminder '{reminder.subject}' for {minutes} minutes until "
+                f"{reminder.scheduled_for.strftime('%I:%M %p')}."
+            ),
+            action="snooze_reminder",
+            payload={"reminder_id": reminder.id, "minutes": str(minutes)},
+        )
+
     def handle_command(self, command: str) -> AssistantResponse:
         """Handle a text command from voice or keyboard input."""
+        command = command.strip()
+        if not command:
+            return AssistantResponse(message="Please say or type a command.", success=False)
+
+        memory_response = self._handle_memory_or_rules(command)
+        if memory_response is not None:
+            self._record_memory(command, memory_response.message)
+            return memory_response
+
         result = self.nlp.predict(command)
 
         if not self._meets_confidence_threshold(result.intent, result.confidence):
             response = self.automation.search_web(command)
             self._log_interaction(command, result.intent, result.confidence, response)
+            self._record_memory(command, response.message)
             return AssistantResponse(
                 message=(
                     "I was not confident about that command, so I opened a web search instead."
@@ -149,12 +203,57 @@ class JarvisAssistant:
 
         response = self._dispatch(result.intent, result.entities, result.normalized_text)
         self._log_interaction(command, result.intent, result.confidence, response)
+        self._record_memory(command, response.message)
         return response
 
     def _meets_confidence_threshold(self, intent: str, confidence: float) -> bool:
         """Apply realistic per-intent confidence floors instead of one global cutoff."""
         minimum = self.INTENT_CONFIDENCE_FLOORS.get(intent, SETTINGS.confidence_threshold)
         return confidence >= minimum
+
+    def _handle_memory_or_rules(self, command: str) -> AssistantResponse | None:
+        normalized = command.lower()
+
+        if normalized in {"show reminders", "what reminders do i have", "list reminders"}:
+            reminders = self.upcoming_reminders()
+            return AssistantResponse(
+                message="Upcoming reminders: " + "; ".join(reminders),
+                action="show_reminders",
+            )
+
+        if normalized in {"complete reminder", "mark reminder done", "complete my reminder"}:
+            return self.complete_next_reminder()
+
+        if normalized in {"snooze reminder", "snooze my reminder"}:
+            return self.snooze_next_reminder()
+
+        snooze_match = re.search(r"snooze reminder for (\d+)\s+minutes?", normalized)
+        if snooze_match:
+            return self.snooze_next_reminder(int(snooze_match.group(1)))
+
+        if normalized in {
+            "what did i ask before",
+            "what was my previous command",
+            "what did i say before",
+            "show recent commands",
+        }:
+            if not self.memory:
+                return AssistantResponse(message="I do not have any recent commands in memory yet.", action="memory_query")
+            recent = self.memory[-3:]
+            summary = "; ".join(f"{item['command']}" for item in recent)
+            return AssistantResponse(message=f"Your recent commands were: {summary}.", action="memory_query")
+
+        return None
+
+    def _record_memory(self, command: str, response: str) -> None:
+        self.memory.append(
+            {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "command": command,
+                "response": response,
+            }
+        )
+        self.memory = self.memory[-15:]
 
     def _dispatch(self, intent: str, entities: dict[str, str], text: str) -> AssistantResponse:
         if intent == "greeting":

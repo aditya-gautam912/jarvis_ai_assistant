@@ -10,6 +10,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from .assistant import JarvisAssistant
+from .config import SETTINGS
 from .preferences_store import PreferencesStore
 from .voice_module import VoiceModule
 
@@ -47,10 +48,13 @@ class JarvisGUI:
         self.notifications_enabled = tk.BooleanVar(value=bool(self.preferences.get("notifications_enabled", True)))
         self.popup_notifications = tk.BooleanVar(value=bool(self.preferences.get("popup_notifications", True)))
         self.reminder_poll_seconds = tk.IntVar(value=int(self.preferences.get("reminder_poll_seconds", 20)))
+        self.require_wake_word = tk.BooleanVar(value=bool(self.preferences.get("require_wake_word", True)))
+        self.continuous_listening = tk.BooleanVar(value=bool(self.preferences.get("continuous_listening", False)))
         self.command_var = tk.StringVar()
         self.listening = False
         self.testing_microphone = False
         self.meter_running = False
+        self.continuous_listener_running = False
         self.meter_level = tk.DoubleVar(value=0.0)
         self.voice_diagnostics = VoiceModule.describe_environment()
         self.settings_window: ctk.CTkToplevel | None = None
@@ -62,6 +66,8 @@ class JarvisGUI:
         self._refresh_voice_panel()
         self.root.after(150, self._drain_events)
         self.root.after(1000, self._check_due_reminders)
+        if self.continuous_listening.get() and self._voice_input_enabled() and self.assistant.voice is not None:
+            self.root.after(1200, self._toggle_continuous_listening)
 
     def run(self) -> None:
         """Start the desktop application."""
@@ -157,6 +163,15 @@ class JarvisGUI:
             command=self._start_voice_capture,
         )
         self.listen_button.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12))
+        self.continuous_button = ctk.CTkButton(
+            controls,
+            text="Start Continuous",
+            height=38,
+            fg_color="#3d2e5f",
+            hover_color="#56427e",
+            command=self._toggle_continuous_listening,
+        )
+        self.continuous_button.grid(row=2, column=2, sticky="ew", padx=(0, 18), pady=(0, 12))
         self.mode_selector = ctk.CTkComboBox(
             controls,
             variable=self.voice_mode,
@@ -168,7 +183,7 @@ class JarvisGUI:
             dropdown_fg_color="#12212d",
             dropdown_hover_color="#1d3442",
         )
-        self.mode_selector.grid(row=2, column=2, sticky="ew", padx=(0, 18), pady=(0, 12))
+        self.mode_selector.grid(row=3, column=0, sticky="ew", padx=(18, 8), pady=(0, 12))
 
         self.intent_label = ctk.CTkLabel(
             controls,
@@ -176,14 +191,20 @@ class JarvisGUI:
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color="#d8e5ed",
         )
-        self.intent_label.grid(row=3, column=0, sticky="w", padx=18, pady=(0, 16))
+        self.intent_label.grid(row=4, column=0, sticky="w", padx=18, pady=(0, 16))
         self.confidence_label = ctk.CTkLabel(
             controls,
             textvariable=self.confidence_text,
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color="#d8e5ed",
         )
-        self.confidence_label.grid(row=3, column=1, columnspan=2, sticky="e", padx=18, pady=(0, 16))
+        self.confidence_label.grid(row=4, column=1, columnspan=2, sticky="e", padx=18, pady=(0, 16))
+        ctk.CTkLabel(
+            controls,
+            text=f"Wake word: {SETTINGS.wake_word}",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color="#9fb4c3",
+        ).grid(row=3, column=1, columnspan=2, sticky="e", padx=18, pady=(0, 12))
 
         history_frame = ctk.CTkFrame(left, fg_color="#12212d", corner_radius=18)
         history_frame.grid(row=1, column=0, sticky="nsew")
@@ -320,6 +341,32 @@ class JarvisGUI:
             text_color="#d8e5ed",
         )
         self.reminder_label.pack(fill="x", padx=18, pady=(0, 16))
+        reminder_actions = ctk.CTkFrame(reminder_panel, fg_color="transparent")
+        reminder_actions.pack(fill="x", padx=18, pady=(0, 14))
+        ctk.CTkButton(
+            reminder_actions,
+            text="Show",
+            width=80,
+            fg_color="#23404f",
+            hover_color="#2f5569",
+            command=self._show_reminders_in_chat,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            reminder_actions,
+            text="Complete Next",
+            width=120,
+            fg_color="#20523a",
+            hover_color="#2b6b4c",
+            command=self._complete_next_reminder,
+        ).pack(side="left", padx=8)
+        ctk.CTkButton(
+            reminder_actions,
+            text="Snooze 15m",
+            width=110,
+            fg_color="#5b4318",
+            hover_color="#7a5a21",
+            command=self._snooze_next_reminder,
+        ).pack(side="left", padx=8)
 
         analytics_panel = ctk.CTkFrame(right, fg_color="#12212d", corner_radius=18)
         analytics_panel.grid(row=2, column=0, sticky="ew", pady=(0, 10))
@@ -430,10 +477,53 @@ class JarvisGUI:
         except OSError:
             heard = None
         if heard:
-            self.events.put(("heard", heard))
+            command, warning = self.assistant.preprocess_voice_command(
+                heard,
+                require_wake_word=bool(self.require_wake_word.get()),
+            )
+            if command:
+                self.events.put(("heard", command))
+            elif warning:
+                self.events.put(("status", warning))
         else:
             self.events.put(("status", "No voice command captured. Check microphone permissions or try text mode."))
         self.events.put(("listening", "done"))
+
+    def _toggle_continuous_listening(self) -> None:
+        if self.continuous_listener_running:
+            self.continuous_listener_running = False
+            self.continuous_button.configure(text="Start Continuous")
+            self.status_text.set("Continuous listening stopped.")
+            return
+
+        if not self._voice_input_enabled() or self.assistant.voice is None:
+            self.status_text.set("Enable voice mode before starting continuous listening.")
+            return
+
+        self.continuous_listener_running = True
+        self.continuous_button.configure(text="Stop Continuous")
+        self.status_text.set("Continuous listening started.")
+        threading.Thread(target=self._continuous_listener_loop, daemon=True).start()
+
+    def _continuous_listener_loop(self) -> None:
+        while self.continuous_listener_running:
+            try:
+                heard = self.assistant.listen_once()
+            except OSError:
+                heard = None
+            if not self.continuous_listener_running:
+                break
+            if not heard:
+                continue
+            command, warning = self.assistant.preprocess_voice_command(
+                heard,
+                require_wake_word=bool(self.require_wake_word.get()),
+            )
+            if command:
+                self.events.put(("heard", command))
+            elif warning and "Wake word" not in warning:
+                self.events.put(("status", warning))
+            time.sleep(0.1)
 
     def _start_microphone_test(self) -> None:
         if self.listening:
@@ -541,7 +631,7 @@ class JarvisGUI:
             elif event == "listening":
                 self.listening = False
                 if self.assistant_state_text.get() == "Listening":
-                    self._set_assistant_state("Idle")
+                    self._set_assistant_state("Listening" if self.continuous_listener_running else "Idle")
             elif event == "mic_test":
                 self._append_history("System", payload, "meta")
                 self.status_text.set(payload)
@@ -634,6 +724,19 @@ class JarvisGUI:
         reminders = self.assistant.upcoming_reminders()
         self.reminder_text.set("\n".join(f"- {line}" for line in reminders))
 
+    def _show_reminders_in_chat(self) -> None:
+        self._append_history("Jarvis", "Upcoming reminders: " + "; ".join(self.assistant.upcoming_reminders()), "jarvis")
+
+    def _complete_next_reminder(self) -> None:
+        response = self.assistant.complete_next_reminder()
+        self._append_history("Jarvis", response.message, "jarvis")
+        self._refresh_reminders()
+
+    def _snooze_next_reminder(self) -> None:
+        response = self.assistant.snooze_next_reminder()
+        self._append_history("Jarvis", response.message, "jarvis")
+        self._refresh_reminders()
+
     def _refresh_voice_diagnostics(self) -> None:
         self.voice_diagnostics = VoiceModule.describe_environment()
         self._refresh_microphone_picker()
@@ -687,6 +790,7 @@ class JarvisGUI:
             voice_input = False
 
         self.listen_button.configure(state="normal" if voice_input else "disabled")
+        self.continuous_button.configure(state="normal" if voice_input else "disabled")
         self.test_mic_button.configure(
             state="normal" if self.voice_diagnostics.get("microphone_available") else "disabled"
         )
@@ -766,6 +870,16 @@ class JarvisGUI:
             padx=18,
             pady=8,
         )
+        ctk.CTkCheckBox(frame, text="Require wake word for voice commands", variable=self.require_wake_word).pack(
+            anchor="w",
+            padx=18,
+            pady=8,
+        )
+        ctk.CTkCheckBox(frame, text="Start in continuous listening mode", variable=self.continuous_listening).pack(
+            anchor="w",
+            padx=18,
+            pady=8,
+        )
         ctk.CTkCheckBox(frame, text="Show popup reminder alerts", variable=self.popup_notifications).pack(
             anchor="w",
             padx=18,
@@ -812,6 +926,8 @@ class JarvisGUI:
                 "notifications_enabled": bool(self.notifications_enabled.get()),
                 "popup_notifications": bool(self.popup_notifications.get()),
                 "reminder_poll_seconds": int(self.reminder_poll_seconds.get()),
+                "require_wake_word": bool(self.require_wake_word.get()),
+                "continuous_listening": bool(self.continuous_listening.get()),
             }
         )
         self.preferences_store.save(self.preferences)

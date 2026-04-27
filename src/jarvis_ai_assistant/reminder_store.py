@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -58,6 +58,31 @@ class ReminderStore:
                 reminder.notified_at = notified_at or datetime.now()
                 break
         self._save_reminders(reminders)
+
+    def complete_reminder(self, reminder_id: str) -> ReminderRecord | None:
+        """Mark a reminder as completed."""
+        reminders = self._load_reminders()
+        completed: ReminderRecord | None = None
+        for reminder in reminders:
+            if reminder.id == reminder_id:
+                reminder.completed = True
+                completed = reminder
+                break
+        self._save_reminders(reminders)
+        return completed
+
+    def snooze_reminder(self, reminder_id: str, minutes: int = 15) -> ReminderRecord | None:
+        """Push a reminder into the future and clear any notification marker."""
+        reminders = self._load_reminders()
+        snoozed: ReminderRecord | None = None
+        for reminder in reminders:
+            if reminder.id == reminder_id:
+                reminder.scheduled_for = datetime.now() + timedelta(minutes=minutes)
+                reminder.notified_at = None
+                snoozed = reminder
+                break
+        self._save_reminders(reminders)
+        return snoozed
 
     def summary_lines(self, limit: int = 6) -> list[str]:
         """Format reminder summaries for the GUI."""
