@@ -9,6 +9,7 @@ from datetime import datetime
 from .analytics import InteractionAnalytics
 from .api_services import APIService, APIServiceError
 from .automation_module import AutomationModule
+from .calculator import CalculationError, Calculator
 from .config import SETTINGS
 from .memory_store import MemoryStore
 from .models import AssistantResponse, InteractionRecord
@@ -46,6 +47,7 @@ class JarvisAssistant:
         self.nlp = NLPEngine()
         self.api = APIService()
         self.automation = AutomationModule()
+        self.calculator = Calculator()
         self.analytics = InteractionAnalytics()
         self.reminders = ReminderStore()
         self.memory_store = MemoryStore()
@@ -212,6 +214,12 @@ class JarvisAssistant:
         if memory_response is not None:
             self._record_memory(command, memory_response.message)
             return memory_response
+
+        if self.calculator.can_handle(command):
+            response = self._handle_calculation(command)
+            self._log_interaction(command, "math_calculation", 1.0, response)
+            self._record_memory(command, response.message)
+            return response
 
         result = self.nlp.predict(command)
 
@@ -419,6 +427,24 @@ class JarvisAssistant:
             message=f"Calendar event created for {event['summary']} at {event['start']}.",
             action="schedule_calendar",
             payload=event,
+        )
+
+    def _handle_calculation(self, command: str) -> AssistantResponse:
+        try:
+            expression, result = self.calculator.evaluate(command)
+        except (CalculationError, ZeroDivisionError, ValueError) as exc:
+            LOGGER.info("Calculation failed for %r: %s", command, exc)
+            return AssistantResponse(
+                message="I could not calculate that expression safely.",
+                success=False,
+                action="math_error",
+            )
+
+        result_text = str(int(result)) if result.is_integer() else f"{result:.6f}".rstrip("0").rstrip(".")
+        return AssistantResponse(
+            message=f"The result of {expression} is {result_text}.",
+            action="math_calculation",
+            payload={"expression": expression, "result": result_text},
         )
 
     def _log_interaction(

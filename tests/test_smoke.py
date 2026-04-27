@@ -13,6 +13,7 @@ from src.jarvis_ai_assistant.analytics import InteractionAnalytics
 from src.jarvis_ai_assistant.api_services import APIService
 from src.jarvis_ai_assistant.assistant import JarvisAssistant
 from src.jarvis_ai_assistant.automation_module import AutomationModule
+from src.jarvis_ai_assistant.calculator import Calculator
 from src.jarvis_ai_assistant.models import AssistantResponse, InteractionRecord
 from src.jarvis_ai_assistant.memory_store import MemoryStore
 from src.jarvis_ai_assistant.nlp_engine import NLPEngine
@@ -154,6 +155,20 @@ class AutomationModuleTests(unittest.TestCase):
         self.assertEqual(url, "https://www.youtube.com/watch?v=abc123def45")
 
 
+class CalculatorTests(unittest.TestCase):
+    def test_evaluates_natural_language_math(self) -> None:
+        calculator = Calculator()
+        expression, result = calculator.evaluate("what is 25 divided by 5 plus 3")
+        self.assertEqual(expression, "25/5+3")
+        self.assertEqual(result, 8.0)
+
+    def test_detects_percent_and_square_root(self) -> None:
+        calculator = Calculator()
+        self.assertTrue(calculator.can_handle("20 percent of 50"))
+        self.assertEqual(calculator.evaluate("20 percent of 50")[1], 10.0)
+        self.assertEqual(calculator.evaluate("square root of 81")[1], 9.0)
+
+
 class AnalyticsTests(unittest.TestCase):
     def test_usage_summary_reports_expected_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -253,6 +268,16 @@ class MemoryStoreTests(unittest.TestCase):
 
 
 class AssistantTests(unittest.TestCase):
+    def test_math_commands_are_answered_locally(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.automation = mock.Mock()
+
+        response = assistant.handle_command("what is 12 * (3 + 1)")
+
+        self.assertEqual(response.action, "math_calculation")
+        self.assertIn("48", response.message)
+        assistant.automation.search_web.assert_not_called()
+
     def test_memory_rules_return_recent_commands(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
         assistant.automation = mock.Mock()
