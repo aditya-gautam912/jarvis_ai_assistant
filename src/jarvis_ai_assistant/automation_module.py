@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import webbrowser
 from pathlib import Path
+
+import requests
 
 try:
     from yt_dlp import YoutubeDL
@@ -18,8 +21,16 @@ from .models import AssistantResponse
 class AutomationModule:
     """Executes local automation actions with simple allowlisted mappings."""
 
+    SEARCH_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+        )
+    }
+
     APP_ALIASES = {
         "notepad": "notepad.exe",
+        "notebook": "notepad.exe",
         "calculator": "calc.exe",
         "paint": "mspaint.exe",
         "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -71,7 +82,8 @@ class AutomationModule:
             message = f"Playing {query} on Spotify."
             action = "play_music_spotify"
         else:
-            url = self._resolve_youtube_video_url(query) or (
+            resolved_url = self._resolve_youtube_video_url(query)
+            url = self._with_youtube_autoplay(resolved_url) if resolved_url else (
                 f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
             )
             if "watch?v=" in url:
@@ -91,6 +103,19 @@ class AutomationModule:
     @staticmethod
     def _resolve_youtube_video_url(query: str) -> str | None:
         """Resolve the top YouTube result to a direct watch URL."""
+        resolved = AutomationModule._resolve_youtube_via_ytdlp(query)
+        if resolved:
+            return resolved
+        return AutomationModule._resolve_youtube_via_html(query)
+
+    @staticmethod
+    def _with_youtube_autoplay(url: str) -> str:
+        """Request autoplay when opening a resolved YouTube watch URL."""
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}autoplay=1"
+
+    @staticmethod
+    def _resolve_youtube_via_ytdlp(query: str) -> str | None:
         if YoutubeDL is None:
             return None
 
@@ -114,6 +139,26 @@ class AutomationModule:
         if not video_id:
             return None
         return f"https://www.youtube.com/watch?v={video_id}"
+
+    @staticmethod
+    def _resolve_youtube_via_html(query: str) -> str | None:
+        try:
+            response = requests.get(
+                "https://www.youtube.com/results",
+                params={"search_query": query},
+                headers=AutomationModule.SEARCH_HEADERS,
+                timeout=10,
+            )
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', response.text)
+        if not match:
+            match = re.search(r"/watch\?v=([a-zA-Z0-9_-]{11})", response.text)
+        if not match:
+            return None
+        return f"https://www.youtube.com/watch?v={match.group(1)}"
 
     def handle_file_operation(self, query: str) -> AssistantResponse:
         """Process simple file and folder commands."""

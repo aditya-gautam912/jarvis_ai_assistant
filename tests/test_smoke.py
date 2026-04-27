@@ -96,6 +96,13 @@ class AutomationModuleTests(unittest.TestCase):
         self.assertTrue(response.success)
         popen_mock.assert_called_once()
 
+    def test_open_application_maps_notebook_to_notepad(self) -> None:
+        module = AutomationModule()
+        with mock.patch("src.jarvis_ai_assistant.automation_module.subprocess.Popen") as popen_mock:
+            response = module.open_application("notebook")
+        self.assertTrue(response.success)
+        popen_mock.assert_called_once_with("notepad.exe")
+
     def test_open_application_falls_back_to_web_search(self) -> None:
         module = AutomationModule()
         with mock.patch("src.jarvis_ai_assistant.automation_module.subprocess.Popen", side_effect=OSError), \
@@ -125,6 +132,7 @@ class AutomationModuleTests(unittest.TestCase):
              mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
             response = module.play_music("believer", "youtube")
         self.assertEqual(response.action, "play_music_youtube")
+        self.assertIn("autoplay=1", response.payload["url"])
         web_open.assert_called_once()
 
     def test_play_music_falls_back_to_youtube_search_when_direct_resolution_fails(self) -> None:
@@ -134,6 +142,14 @@ class AutomationModuleTests(unittest.TestCase):
             response = module.play_music("believer", "youtube")
         self.assertEqual(response.action, "play_music_youtube_search")
         web_open.assert_called_once()
+
+    def test_resolve_youtube_via_html_parses_first_video(self) -> None:
+        fake_response = mock.Mock()
+        fake_response.text = '"videoId":"abc123def45"'
+        module = AutomationModule()
+        with mock.patch("src.jarvis_ai_assistant.automation_module.requests.get", return_value=fake_response):
+            url = module._resolve_youtube_via_html("believer")
+        self.assertEqual(url, "https://www.youtube.com/watch?v=abc123def45")
 
 
 class AnalyticsTests(unittest.TestCase):
