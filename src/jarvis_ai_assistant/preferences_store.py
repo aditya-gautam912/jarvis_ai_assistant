@@ -18,6 +18,8 @@ class PreferencesStore:
         "reminder_poll_seconds": 20,
         "require_wake_word": True,
         "continuous_listening": False,
+        "start_minimized": False,
+        "background_on_close": True,
     }
 
     def __init__(self, storage_path: Path | None = None) -> None:

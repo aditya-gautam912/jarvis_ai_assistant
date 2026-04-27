@@ -10,6 +10,7 @@ from .analytics import InteractionAnalytics
 from .api_services import APIService, APIServiceError
 from .automation_module import AutomationModule
 from .config import SETTINGS
+from .memory_store import MemoryStore
 from .models import AssistantResponse, InteractionRecord
 from .nlp_engine import NLPEngine
 from .reminder_store import ReminderStore
@@ -47,7 +48,8 @@ class JarvisAssistant:
         self.automation = AutomationModule()
         self.analytics = InteractionAnalytics()
         self.reminders = ReminderStore()
-        self.memory: list[dict[str, str]] = []
+        self.memory_store = MemoryStore()
+        self.memory: list[dict[str, str]] = self.memory_store.recent()
 
     def configure_voice(self, enabled: bool, device_index: int | None = None) -> bool:
         """Reinitialize voice support with the requested microphone."""
@@ -175,6 +177,31 @@ class JarvisAssistant:
             payload={"reminder_id": reminder.id, "minutes": str(minutes)},
         )
 
+    def complete_reminder(self, reminder_id: str) -> AssistantResponse:
+        """Complete a specific reminder by identifier."""
+        reminder = self.reminders.complete_reminder(reminder_id)
+        if reminder is None:
+            return AssistantResponse(message="I could not find that reminder to complete.", success=False)
+        return AssistantResponse(
+            message=f"Completed reminder: {reminder.subject}.",
+            action="complete_reminder",
+            payload={"reminder_id": reminder.id},
+        )
+
+    def snooze_reminder(self, reminder_id: str, minutes: int = 15) -> AssistantResponse:
+        """Snooze a specific reminder by identifier."""
+        reminder = self.reminders.snooze_reminder(reminder_id, minutes=minutes)
+        if reminder is None:
+            return AssistantResponse(message="I could not find that reminder to snooze.", success=False)
+        return AssistantResponse(
+            message=(
+                f"Snoozed reminder '{reminder.subject}' for {minutes} minutes until "
+                f"{reminder.scheduled_for.strftime('%I:%M %p')}."
+            ),
+            action="snooze_reminder",
+            payload={"reminder_id": reminder.id, "minutes": str(minutes)},
+        )
+
     def handle_command(self, command: str) -> AssistantResponse:
         """Handle a text command from voice or keyboard input."""
         command = command.strip()
@@ -243,17 +270,22 @@ class JarvisAssistant:
             summary = "; ".join(f"{item['command']}" for item in recent)
             return AssistantResponse(message=f"Your recent commands were: {summary}.", action="memory_query")
 
+        search_match = re.search(r"(search history for|find in history)\s+(.+)", normalized)
+        if search_match:
+            entries = self.memory_store.search(search_match.group(2))
+            if not entries:
+                return AssistantResponse(
+                    message=f"I could not find anything in memory matching {search_match.group(2)}.",
+                    action="memory_query",
+                    success=False,
+                )
+            summary = "; ".join(entry["command"] for entry in entries)
+            return AssistantResponse(message=f"I found these related commands: {summary}.", action="memory_query")
+
         return None
 
     def _record_memory(self, command: str, response: str) -> None:
-        self.memory.append(
-            {
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "command": command,
-                "response": response,
-            }
-        )
-        self.memory = self.memory[-15:]
+        self.memory = self.memory_store.append(command=command, response=response, timestamp=datetime.now())
 
     def _dispatch(self, intent: str, entities: dict[str, str], text: str) -> AssistantResponse:
         if intent == "greeting":

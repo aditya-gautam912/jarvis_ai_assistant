@@ -14,6 +14,7 @@ from src.jarvis_ai_assistant.api_services import APIService
 from src.jarvis_ai_assistant.assistant import JarvisAssistant
 from src.jarvis_ai_assistant.automation_module import AutomationModule
 from src.jarvis_ai_assistant.models import AssistantResponse, InteractionRecord
+from src.jarvis_ai_assistant.memory_store import MemoryStore
 from src.jarvis_ai_assistant.nlp_engine import NLPEngine
 from src.jarvis_ai_assistant.preferences_store import PreferencesStore
 from src.jarvis_ai_assistant.reminder_store import ReminderStore
@@ -238,6 +239,19 @@ class PreferencesStoreTests(unittest.TestCase):
         self.assertEqual(payload["reminder_poll_seconds"], 60)
 
 
+class MemoryStoreTests(unittest.TestCase):
+    def test_memory_persists_and_searches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(storage_path=Path(temp_dir) / "memory.json", limit=10)
+            store.append("open notepad", "Opening notepad.")
+            store.append("play believer", "Playing believer.")
+            recent = store.recent()
+            search = store.search("believer")
+
+        self.assertEqual(len(recent), 2)
+        self.assertEqual(search[0]["command"], "play believer")
+
+
 class AssistantTests(unittest.TestCase):
     def test_memory_rules_return_recent_commands(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
@@ -397,6 +411,8 @@ class GUISmokeTests(unittest.TestCase):
             mark_reminder_notified=lambda _id: None,
             complete_next_reminder=lambda: AssistantResponse(message="Completed reminder."),
             snooze_next_reminder=lambda minutes=15: AssistantResponse(message="Snoozed reminder."),
+            complete_reminder=lambda reminder_id: AssistantResponse(message=f"Completed {reminder_id}."),
+            snooze_reminder=lambda reminder_id, minutes=15: AssistantResponse(message=f"Snoozed {reminder_id}."),
             preprocess_voice_command=lambda heard_text, require_wake_word: (heard_text, None),
             configure_voice=lambda enabled, device_index=None: False,
             nlp=mock.Mock(),

@@ -41,6 +41,7 @@ def main() -> None:
     """Start the assistant GUI by default, with an optional CLI mode."""
     parser = argparse.ArgumentParser(description="Jarvis AI assistant")
     parser.add_argument("--cli", action="store_true", help="Run the terminal interface instead of the GUI.")
+    parser.add_argument("--minimized", action="store_true", help="Start the GUI hidden in background mode.")
     args = parser.parse_args()
 
     configure_logging()
@@ -49,7 +50,7 @@ def main() -> None:
         run_cli()
         return
 
-    JarvisGUI().run()
+    JarvisGUI(start_minimized=args.minimized).run()
 
 
 if __name__ == "__main__":

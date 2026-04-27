@@ -22,7 +22,7 @@ ctk.set_default_color_theme("blue")
 class JarvisGUI:
     """Desktop UI that wraps the assistant's text and voice workflows."""
 
-    def __init__(self) -> None:
+    def __init__(self, start_minimized: bool = False) -> None:
         self.assistant = JarvisAssistant(enable_voice=True)
         self.preferences_store = PreferencesStore()
         self.preferences = self.preferences_store.load()
@@ -50,6 +50,10 @@ class JarvisGUI:
         self.reminder_poll_seconds = tk.IntVar(value=int(self.preferences.get("reminder_poll_seconds", 20)))
         self.require_wake_word = tk.BooleanVar(value=bool(self.preferences.get("require_wake_word", True)))
         self.continuous_listening = tk.BooleanVar(value=bool(self.preferences.get("continuous_listening", False)))
+        self.start_minimized = tk.BooleanVar(
+            value=bool(start_minimized or self.preferences.get("start_minimized", False))
+        )
+        self.background_on_close = tk.BooleanVar(value=bool(self.preferences.get("background_on_close", True)))
         self.command_var = tk.StringVar()
         self.listening = False
         self.testing_microphone = False
@@ -58,8 +62,10 @@ class JarvisGUI:
         self.meter_level = tk.DoubleVar(value=0.0)
         self.voice_diagnostics = VoiceModule.describe_environment()
         self.settings_window: ctk.CTkToplevel | None = None
+        self.background_window: ctk.CTkToplevel | None = None
 
         self._build_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self._handle_close_request)
         self._refresh_microphone_picker()
         self._refresh_analytics()
         self._refresh_reminders()
@@ -68,6 +74,8 @@ class JarvisGUI:
         self.root.after(1000, self._check_due_reminders)
         if self.continuous_listening.get() and self._voice_input_enabled() and self.assistant.voice is not None:
             self.root.after(1200, self._toggle_continuous_listening)
+        if self.start_minimized.get():
+            self.root.after(800, self._hide_to_background)
 
     def run(self) -> None:
         """Start the desktop application."""
@@ -85,6 +93,7 @@ class JarvisGUI:
         header.grid_columnconfigure(0, weight=1)
         header.grid_columnconfigure(1, weight=0)
         header.grid_columnconfigure(2, weight=0)
+        header.grid_columnconfigure(3, weight=0)
 
         ctk.CTkLabel(
             header,
@@ -113,6 +122,14 @@ class JarvisGUI:
             hover_color="#2f5569",
             command=self._open_settings,
         ).grid(row=0, column=2, rowspan=2, sticky="e", padx=(0, 22))
+        ctk.CTkButton(
+            header,
+            text="Background",
+            width=110,
+            fg_color="#173a2d",
+            hover_color="#20523a",
+            command=self._hide_to_background,
+        ).grid(row=0, column=3, rowspan=2, sticky="e", padx=(0, 12))
 
         left = ctk.CTkFrame(container, fg_color="transparent")
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
@@ -850,7 +867,7 @@ class JarvisGUI:
 
         window = ctk.CTkToplevel(self.root)
         window.title("Jarvis Settings")
-        window.geometry("440x320")
+        window.geometry("460x420")
         window.resizable(False, False)
         window.configure(fg_color="#0b141b")
         self.settings_window = window
@@ -876,6 +893,16 @@ class JarvisGUI:
             pady=8,
         )
         ctk.CTkCheckBox(frame, text="Start in continuous listening mode", variable=self.continuous_listening).pack(
+            anchor="w",
+            padx=18,
+            pady=8,
+        )
+        ctk.CTkCheckBox(frame, text="Start minimized in background mode", variable=self.start_minimized).pack(
+            anchor="w",
+            padx=18,
+            pady=8,
+        )
+        ctk.CTkCheckBox(frame, text="Send Close button to background", variable=self.background_on_close).pack(
             anchor="w",
             padx=18,
             pady=8,
@@ -928,6 +955,8 @@ class JarvisGUI:
                 "reminder_poll_seconds": int(self.reminder_poll_seconds.get()),
                 "require_wake_word": bool(self.require_wake_word.get()),
                 "continuous_listening": bool(self.continuous_listening.get()),
+                "start_minimized": bool(self.start_minimized.get()),
+                "background_on_close": bool(self.background_on_close.get()),
             }
         )
         self.preferences_store.save(self.preferences)
@@ -942,17 +971,17 @@ class JarvisGUI:
                 self._append_history("System", notice, "meta")
                 self.status_text.set(notice)
                 if self.popup_notifications.get():
-                    self._show_notification_popup("Reminder", notice)
+                    self._show_notification_popup("Reminder", notice, reminder["id"])
                 self.assistant.mark_reminder_notified(reminder["id"])
             self._refresh_reminders()
 
         interval_ms = max(int(self.reminder_poll_seconds.get()), 5) * 1000
         self.root.after(interval_ms, self._check_due_reminders)
 
-    def _show_notification_popup(self, title: str, message: str) -> None:
+    def _show_notification_popup(self, title: str, message: str, reminder_id: str | None = None) -> None:
         popup = ctk.CTkToplevel(self.root)
         popup.title(title)
-        popup.geometry("380x170")
+        popup.geometry("380x220")
         popup.configure(fg_color="#12212d")
         popup.attributes("-topmost", True)
         ctk.CTkLabel(
@@ -969,12 +998,115 @@ class JarvisGUI:
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color="#eef4f7",
         ).pack(anchor="w", padx=18, pady=(0, 14))
+        buttons = ctk.CTkFrame(popup, fg_color="transparent")
+        buttons.pack(fill="x", padx=18, pady=(0, 14))
         ctk.CTkButton(
-            popup,
+            buttons,
             text="Dismiss",
-            width=100,
+            width=90,
             fg_color="#23404f",
             hover_color="#2f5569",
             command=popup.destroy,
-        ).pack(anchor="e", padx=18, pady=(0, 14))
+        ).pack(side="right", padx=(8, 0))
+        if reminder_id:
+            ctk.CTkButton(
+                buttons,
+                text="Snooze 15m",
+                width=110,
+                fg_color="#5b4318",
+                hover_color="#7a5a21",
+                command=lambda: self._handle_popup_reminder_action(popup, reminder_id, "snooze"),
+            ).pack(side="left")
+            ctk.CTkButton(
+                buttons,
+                text="Complete",
+                width=100,
+                fg_color="#20523a",
+                hover_color="#2b6b4c",
+                command=lambda: self._handle_popup_reminder_action(popup, reminder_id, "complete"),
+            ).pack(side="left", padx=(0, 8))
         popup.after(12000, lambda: popup.winfo_exists() and popup.destroy())
+
+    def _handle_popup_reminder_action(self, popup: ctk.CTkToplevel, reminder_id: str, action: str) -> None:
+        if action == "complete":
+            response = self.assistant.complete_reminder(reminder_id)
+        else:
+            response = self.assistant.snooze_reminder(reminder_id, minutes=15)
+        self._append_history("Jarvis", response.message, "jarvis")
+        self.status_text.set(response.message)
+        self._refresh_reminders()
+        if popup.winfo_exists():
+            popup.destroy()
+
+    def _handle_close_request(self) -> None:
+        if self.background_on_close.get():
+            self._hide_to_background()
+            return
+        self._shutdown()
+
+    def _hide_to_background(self) -> None:
+        if self.background_window is not None and self.background_window.winfo_exists():
+            self.background_window.lift()
+            self.root.withdraw()
+            self.status_text.set("Jarvis is running in background mode.")
+            return
+
+        self.root.withdraw()
+        window = ctk.CTkToplevel(self.root)
+        window.title("Jarvis Background")
+        window.geometry("320x170")
+        window.resizable(False, False)
+        window.attributes("-topmost", True)
+        window.configure(fg_color="#0b141b")
+        self.background_window = window
+        window.protocol("WM_DELETE_WINDOW", self._shutdown)
+
+        frame = ctk.CTkFrame(window, fg_color="#12212d", corner_radius=18)
+        frame.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(
+            frame,
+            text="Jarvis Is Running",
+            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+            text_color="#f8c15c",
+        ).pack(anchor="w", padx=18, pady=(18, 8))
+        ctk.CTkLabel(
+            frame,
+            text="Voice commands, reminders, and background checks stay active while the main window is hidden.",
+            justify="left",
+            wraplength=260,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color="#eef4f7",
+        ).pack(anchor="w", padx=18, pady=(0, 12))
+        buttons = ctk.CTkFrame(frame, fg_color="transparent")
+        buttons.pack(fill="x", padx=18, pady=(0, 18))
+        ctk.CTkButton(
+            buttons,
+            text="Restore",
+            fg_color="#1e5f74",
+            hover_color="#277d97",
+            command=self._restore_from_background,
+        ).pack(side="left")
+        ctk.CTkButton(
+            buttons,
+            text="Exit",
+            fg_color="#5f2a2a",
+            hover_color="#7d3939",
+            command=self._shutdown,
+        ).pack(side="right")
+        self.status_text.set("Jarvis is running in background mode.")
+
+    def _restore_from_background(self) -> None:
+        if self.background_window is not None and self.background_window.winfo_exists():
+            self.background_window.destroy()
+        self.background_window = None
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        self.status_text.set("Jarvis window restored.")
+
+    def _shutdown(self) -> None:
+        self.continuous_listener_running = False
+        self.meter_running = False
+        if self.background_window is not None and self.background_window.winfo_exists():
+            self.background_window.destroy()
+        self.root.destroy()
