@@ -39,3 +39,15 @@ class Settings:
 
 
 SETTINGS = Settings()
+
+
+def integration_status() -> dict[str, bool]:
+    """Report whether optional integrations appear configured."""
+    credentials_path = BASE_DIR / SETTINGS.google_credentials_file
+    token_path = BASE_DIR / SETTINGS.google_token_file
+    return {
+        "weather_api": bool(SETTINGS.weather_api_key),
+        "news_api": bool(SETTINGS.news_api_key),
+        "google_calendar_credentials": credentials_path.exists(),
+        "google_calendar_token": token_path.exists(),
+    }

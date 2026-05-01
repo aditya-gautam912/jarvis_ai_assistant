@@ -11,6 +11,7 @@ from .api_services import APIService, APIServiceError
 from .automation_module import AutomationModule
 from .calculator import CalculationError, Calculator
 from .config import SETTINGS
+from .config import integration_status
 from .memory_store import MemoryStore
 from .models import AssistantResponse, InteractionRecord
 from .nlp_engine import NLPEngine
@@ -52,6 +53,7 @@ class JarvisAssistant:
         self.reminders = ReminderStore()
         self.memory_store = MemoryStore()
         self.memory: list[dict[str, str]] = self.memory_store.recent()
+        self.pending_confirmation: dict[str, object] | None = None
 
     def configure_voice(self, enabled: bool, device_index: int | None = None) -> bool:
         """Reinitialize voice support with the requested microphone."""
@@ -133,6 +135,10 @@ class JarvisAssistant:
         """Expose analytics summaries to UI layers."""
         return self.analytics.usage_summary()
 
+    def configured_integrations(self) -> dict[str, bool]:
+        """Expose integration readiness to UI layers."""
+        return integration_status()
+
     def upcoming_reminders(self) -> list[str]:
         """Expose upcoming reminders to UI layers."""
         return self.reminders.summary_lines()
@@ -210,6 +216,11 @@ class JarvisAssistant:
         if not command:
             return AssistantResponse(message="Please say or type a command.", success=False)
 
+        confirmation_response = self._handle_confirmation_reply(command)
+        if confirmation_response is not None:
+            self._record_memory(command, confirmation_response.message)
+            return confirmation_response
+
         memory_response = self._handle_memory_or_rules(command)
         if memory_response is not None:
             self._record_memory(command, memory_response.message)
@@ -235,6 +246,11 @@ class JarvisAssistant:
                 action="low_confidence_fallback",
                 payload={"predicted_intent": result.intent, "confidence": result.confidence},
             )
+
+        confirmation_gate = self._build_confirmation_request(result.intent, result.entities, result.normalized_text)
+        if confirmation_gate is not None:
+            self._record_memory(command, confirmation_gate.message)
+            return confirmation_gate
 
         response = self._dispatch(result.intent, result.entities, result.normalized_text)
         self._log_interaction(command, result.intent, result.confidence, response)
@@ -289,6 +305,86 @@ class JarvisAssistant:
                 )
             summary = "; ".join(entry["command"] for entry in entries)
             return AssistantResponse(message=f"I found these related commands: {summary}.", action="memory_query")
+
+        return None
+
+    def _handle_confirmation_reply(self, command: str) -> AssistantResponse | None:
+        if self.pending_confirmation is None:
+            return None
+
+        normalized = command.lower()
+        if normalized in {"yes", "confirm", "go ahead", "continue", "proceed", "okay"}:
+            pending = self.pending_confirmation
+            self.pending_confirmation = None
+            response = self._dispatch(
+                str(pending["intent"]),
+                dict(pending["entities"]),
+                str(pending["text"]),
+            )
+            self._log_interaction(
+                str(pending["original_command"]),
+                str(pending["intent"]),
+                1.0,
+                response,
+            )
+            return response
+
+        if normalized in {"no", "cancel", "stop", "never mind"}:
+            self.pending_confirmation = None
+            return AssistantResponse(
+                message="Okay, I cancelled that action.",
+                action="confirmation_cancelled",
+            )
+
+        return AssistantResponse(
+            message="Please reply with yes or no to confirm the pending action.",
+            success=False,
+            action="confirmation_required",
+            requires_confirmation=True,
+        )
+
+    def _build_confirmation_request(
+        self,
+        intent: str,
+        entities: dict[str, str],
+        text: str,
+    ) -> AssistantResponse | None:
+        if intent == "schedule_calendar":
+            subject = entities.get("subject", "Jarvis event").strip() or "Jarvis event"
+            when = entities.get("when", "the requested time")
+            self.pending_confirmation = {
+                "intent": intent,
+                "entities": entities,
+                "text": text,
+                "original_command": text,
+            }
+            return AssistantResponse(
+                message=f"Confirm calendar event '{subject}' for {when}? Reply yes or no.",
+                action="confirmation_required",
+                payload={"intent": intent},
+                requires_confirmation=True,
+            )
+
+        if intent == "file_operation":
+            normalized = text.lower()
+            if "create a file" in normalized or "new text file" in normalized:
+                description = "create a file on your desktop"
+            elif "create a folder" in normalized:
+                description = "create a folder on your desktop"
+            else:
+                return None
+            self.pending_confirmation = {
+                "intent": intent,
+                "entities": entities,
+                "text": text,
+                "original_command": text,
+            }
+            return AssistantResponse(
+                message=f"Confirm that I should {description}? Reply yes or no.",
+                action="confirmation_required",
+                payload={"intent": intent},
+                requires_confirmation=True,
+            )
 
         return None
 

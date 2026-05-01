@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 
 import customtkinter as ctk
 
 from .assistant import JarvisAssistant
 from .config import SETTINGS
+from .desktop_integration import StartupManager, TrayController
 from .preferences_store import PreferencesStore
 from .voice_module import VoiceModule
 
@@ -54,6 +58,8 @@ class JarvisGUI:
             value=bool(start_minimized or self.preferences.get("start_minimized", False))
         )
         self.background_on_close = tk.BooleanVar(value=bool(self.preferences.get("background_on_close", True)))
+        self.tray_enabled = tk.BooleanVar(value=bool(self.preferences.get("tray_enabled", True)))
+        self.launch_on_startup = tk.BooleanVar(value=bool(self.preferences.get("launch_on_startup", False)))
         self.command_var = tk.StringVar()
         self.listening = False
         self.testing_microphone = False
@@ -63,11 +69,14 @@ class JarvisGUI:
         self.voice_diagnostics = VoiceModule.describe_environment()
         self.settings_window: ctk.CTkToplevel | None = None
         self.background_window: ctk.CTkToplevel | None = None
+        self.tray_controller = TrayController()
+        self.startup_manager = StartupManager()
 
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._handle_close_request)
         self._refresh_microphone_picker()
         self._refresh_analytics()
+        self._refresh_integrations()
         self._refresh_reminders()
         self._refresh_voice_panel()
         self.root.after(150, self._drain_events)
@@ -263,7 +272,7 @@ class JarvisGUI:
 
         right = ctk.CTkFrame(container, fg_color="transparent")
         right.grid(row=1, column=1, sticky="nsew")
-        right.grid_rowconfigure(3, weight=1)
+        right.grid_rowconfigure(4, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
         voice_panel = ctk.CTkFrame(right, fg_color="#12212d", corner_radius=18)
@@ -403,8 +412,26 @@ class JarvisGUI:
         )
         self.analytics_label.pack(fill="x", padx=18, pady=(0, 16))
 
+        integration_panel = ctk.CTkFrame(right, fg_color="#12212d", corner_radius=18)
+        integration_panel.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        ctk.CTkLabel(
+            integration_panel,
+            text="Integration Status",
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color="#f8c15c",
+        ).pack(anchor="w", padx=18, pady=(16, 8))
+        self.integration_label = ctk.CTkLabel(
+            integration_panel,
+            text="Checking integrations...",
+            justify="left",
+            anchor="w",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color="#d8e5ed",
+        )
+        self.integration_label.pack(fill="x", padx=18, pady=(0, 16))
+
         shortcuts = ctk.CTkFrame(right, fg_color="#12212d", corner_radius=18)
-        shortcuts.grid(row=3, column=0, sticky="nsew")
+        shortcuts.grid(row=4, column=0, sticky="nsew")
         shortcuts.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             shortcuts,
@@ -737,6 +764,20 @@ class JarvisGUI:
         )
         self.analytics_label.configure(text=details)
 
+    def _refresh_integrations(self) -> None:
+        status = self.assistant.configured_integrations()
+        lines = [
+            f"OpenWeather API: {'Configured' if status['weather_api'] else 'Missing key'}",
+            f"News API: {'Configured' if status['news_api'] else 'Missing key'}",
+            (
+                "Google Calendar: Ready"
+                if status["google_calendar_credentials"] and status["google_calendar_token"]
+                else "Google Calendar: Needs credentials or token"
+            ),
+            f"System tray: {'Available' if self.tray_controller.is_available() else 'Needs pystray/Pillow install'}",
+        ]
+        self.integration_label.configure(text="\n".join(lines))
+
     def _refresh_reminders(self) -> None:
         reminders = self.assistant.upcoming_reminders()
         self.reminder_text.set("\n".join(f"- {line}" for line in reminders))
@@ -902,6 +943,16 @@ class JarvisGUI:
             padx=18,
             pady=8,
         )
+        ctk.CTkCheckBox(frame, text="Use system tray when hidden", variable=self.tray_enabled).pack(
+            anchor="w",
+            padx=18,
+            pady=8,
+        )
+        ctk.CTkCheckBox(frame, text="Launch Jarvis on Windows startup", variable=self.launch_on_startup).pack(
+            anchor="w",
+            padx=18,
+            pady=8,
+        )
         ctk.CTkCheckBox(frame, text="Send Close button to background", variable=self.background_on_close).pack(
             anchor="w",
             padx=18,
@@ -957,10 +1008,14 @@ class JarvisGUI:
                 "continuous_listening": bool(self.continuous_listening.get()),
                 "start_minimized": bool(self.start_minimized.get()),
                 "background_on_close": bool(self.background_on_close.get()),
+                "tray_enabled": bool(self.tray_enabled.get()),
+                "launch_on_startup": bool(self.launch_on_startup.get()),
             }
         )
         self.preferences_store.save(self.preferences)
-        self.status_text.set("Settings saved.")
+        startup_status = self._apply_startup_preference()
+        self.status_text.set(startup_status or "Settings saved.")
+        self._refresh_integrations()
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.settings_window.destroy()
 
@@ -1044,7 +1099,41 @@ class JarvisGUI:
             return
         self._shutdown()
 
+    def _apply_startup_preference(self) -> str | None:
+        if not self.startup_manager.is_available():
+            return "Startup integration is unavailable on this machine."
+
+        try:
+            if self.launch_on_startup.get():
+                self.startup_manager.enable(
+                    target=self._startup_target(),
+                    arguments="-m src.jarvis_ai_assistant.main --minimized",
+                    working_directory=str(Path(__file__).resolve().parents[2]),
+                )
+                return "Settings saved. Jarvis will launch at Windows startup."
+            self.startup_manager.disable()
+            return "Settings saved. Windows startup launch is disabled."
+        except (OSError, subprocess.SubprocessError):
+            return "Settings saved, but Windows startup integration could not be updated."
+
+    def _startup_target(self) -> str:
+        executable = Path(sys.executable)
+        pythonw = executable.with_name("pythonw.exe")
+        return str(pythonw if pythonw.exists() else executable)
+
     def _hide_to_background(self) -> None:
+        if self.tray_enabled.get() and self.tray_controller.start(
+            "Jarvis AI Voice Assistant",
+            on_restore=lambda: self.root.after(0, self._restore_from_background),
+            on_exit=lambda: self.root.after(0, self._shutdown),
+        ):
+            if self.background_window is not None and self.background_window.winfo_exists():
+                self.background_window.destroy()
+                self.background_window = None
+            self.root.withdraw()
+            self.status_text.set("Jarvis is running from the system tray.")
+            return
+
         if self.background_window is not None and self.background_window.winfo_exists():
             self.background_window.lift()
             self.root.withdraw()
@@ -1096,6 +1185,7 @@ class JarvisGUI:
         self.status_text.set("Jarvis is running in background mode.")
 
     def _restore_from_background(self) -> None:
+        self.tray_controller.stop()
         if self.background_window is not None and self.background_window.winfo_exists():
             self.background_window.destroy()
         self.background_window = None
@@ -1107,6 +1197,7 @@ class JarvisGUI:
     def _shutdown(self) -> None:
         self.continuous_listener_running = False
         self.meter_running = False
+        self.tray_controller.stop()
         if self.background_window is not None and self.background_window.winfo_exists():
             self.background_window.destroy()
         self.root.destroy()

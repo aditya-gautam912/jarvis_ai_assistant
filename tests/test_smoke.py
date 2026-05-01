@@ -14,6 +14,7 @@ from src.jarvis_ai_assistant.api_services import APIService
 from src.jarvis_ai_assistant.assistant import JarvisAssistant
 from src.jarvis_ai_assistant.automation_module import AutomationModule
 from src.jarvis_ai_assistant.calculator import Calculator
+from src.jarvis_ai_assistant.desktop_integration import StartupManager
 from src.jarvis_ai_assistant.models import AssistantResponse, InteractionRecord
 from src.jarvis_ai_assistant.memory_store import MemoryStore
 from src.jarvis_ai_assistant.nlp_engine import NLPEngine
@@ -169,6 +170,22 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(calculator.evaluate("square root of 81")[1], 9.0)
 
 
+class DesktopIntegrationTests(unittest.TestCase):
+    def test_startup_manager_enable_invokes_powershell_shortcut_creation(self) -> None:
+        manager = StartupManager()
+        shortcut_path = Path("C:/Users/ag950/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/Jarvis.lnk")
+        with mock.patch.object(manager, "_shortcut_path", return_value=shortcut_path), \
+             mock.patch("src.jarvis_ai_assistant.desktop_integration.subprocess.run") as run_mock:
+            manager.enable(
+                target="C:/Python/pythonw.exe",
+                arguments="-m src.jarvis_ai_assistant.main --minimized",
+                working_directory="C:/Users/ag950/jarvis_ai_assistant",
+            )
+
+        run_mock.assert_called_once()
+        self.assertIn("CreateShortcut", run_mock.call_args.args[0][-1])
+
+
 class AnalyticsTests(unittest.TestCase):
     def test_usage_summary_reports_expected_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -268,6 +285,52 @@ class MemoryStoreTests(unittest.TestCase):
 
 
 class AssistantTests(unittest.TestCase):
+    def test_calendar_and_file_creation_require_confirmation(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.nlp = mock.Mock()
+        assistant.nlp.predict.side_effect = [
+            SimpleNamespace(
+                intent="schedule_calendar",
+                confidence=0.9,
+                normalized_text="schedule a meeting tomorrow at 3 pm",
+                entities={"subject": "meeting", "when": "tomorrow at 3 pm"},
+            ),
+            SimpleNamespace(
+                intent="file_operation",
+                confidence=0.9,
+                normalized_text="create a file named notes",
+                entities={"query": "create a file named notes"},
+            ),
+        ]
+
+        calendar_response = assistant.handle_command("schedule a meeting tomorrow at 3 pm")
+        assistant.pending_confirmation = None
+        file_response = assistant.handle_command("create a file named notes")
+
+        self.assertTrue(calendar_response.requires_confirmation)
+        self.assertEqual(calendar_response.action, "confirmation_required")
+        self.assertTrue(file_response.requires_confirmation)
+
+    def test_yes_confirms_pending_action(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.pending_confirmation = {
+            "intent": "schedule_calendar",
+            "entities": {"subject": "meeting", "when": "today 6 pm"},
+            "text": "schedule a meeting today at 6 pm",
+            "original_command": "schedule a meeting today at 6 pm",
+        }
+        assistant.api = mock.Mock()
+        assistant.api.create_calendar_event.return_value = {
+            "summary": "meeting",
+            "start": "2026-04-24T18:00:00",
+            "htmlLink": "https://calendar.example",
+        }
+
+        response = assistant.handle_command("yes")
+
+        self.assertEqual(response.action, "schedule_calendar")
+        self.assertIsNone(assistant.pending_confirmation)
+
     def test_math_commands_are_answered_locally(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
         assistant.automation = mock.Mock()
@@ -431,6 +494,12 @@ class GUISmokeTests(unittest.TestCase):
                 "success_rate": 0.0,
                 "top_intents": {},
             },
+            configured_integrations=lambda: {
+                "weather_api": False,
+                "news_api": False,
+                "google_calendar_credentials": False,
+                "google_calendar_token": False,
+            },
             upcoming_reminders=lambda: ["No upcoming reminders."],
             due_reminders=lambda: [],
             mark_reminder_notified=lambda _id: None,
@@ -465,6 +534,57 @@ class GUISmokeTests(unittest.TestCase):
                 self.assertEqual(app.selected_microphone.get(), "System Default")
                 self.assertIsNotNone(app.listen_button)
                 self.assertIsNotNone(app.meter_button)
+            finally:
+                app.root.destroy()
+
+    def test_gui_applies_startup_preference(self) -> None:
+        from src.jarvis_ai_assistant.gui import JarvisGUI
+
+        fake_assistant = SimpleNamespace(
+            voice=None,
+            usage_summary=lambda: {"total_commands": 0, "average_confidence": 0.0, "success_rate": 0.0, "top_intents": {}},
+            configured_integrations=lambda: {
+                "weather_api": False,
+                "news_api": False,
+                "google_calendar_credentials": False,
+                "google_calendar_token": False,
+            },
+            upcoming_reminders=lambda: ["No upcoming reminders."],
+            due_reminders=lambda: [],
+            mark_reminder_notified=lambda _id: None,
+            complete_next_reminder=lambda: AssistantResponse(message="Completed reminder."),
+            snooze_next_reminder=lambda minutes=15: AssistantResponse(message="Snoozed reminder."),
+            complete_reminder=lambda reminder_id: AssistantResponse(message=f"Completed {reminder_id}."),
+            snooze_reminder=lambda reminder_id, minutes=15: AssistantResponse(message=f"Snoozed {reminder_id}."),
+            preprocess_voice_command=lambda heard_text, require_wake_word: (heard_text, None),
+            configure_voice=lambda enabled, device_index=None: False,
+            nlp=mock.Mock(),
+            handle_command=mock.Mock(return_value=AssistantResponse(message="ok")),
+            test_microphone=mock.Mock(return_value=(False, "No speech")),
+            create_audio_monitor=mock.Mock(),
+            listen_once=mock.Mock(return_value=None),
+            speak=mock.Mock(),
+        )
+        fake_diagnostics = {
+            "microphone_available": False,
+            "device_count": 0,
+            "devices": [],
+            "device_options": [],
+            "tts_available": False,
+            "meter_available": False,
+            "error": "No microphone input devices were detected.",
+        }
+
+        with mock.patch("src.jarvis_ai_assistant.gui.JarvisAssistant", return_value=fake_assistant), \
+             mock.patch("src.jarvis_ai_assistant.gui.VoiceModule.describe_environment", return_value=fake_diagnostics):
+            app = JarvisGUI()
+            try:
+                app.startup_manager = mock.Mock()
+                app.startup_manager.is_available.return_value = True
+                app.launch_on_startup.set(True)
+                message = app._apply_startup_preference()
+                self.assertIn("Windows startup", message)
+                app.startup_manager.enable.assert_called_once()
             finally:
                 app.root.destroy()
 

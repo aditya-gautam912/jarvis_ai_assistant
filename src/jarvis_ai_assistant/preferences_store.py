@@ -20,6 +20,8 @@ class PreferencesStore:
         "continuous_listening": False,
         "start_minimized": False,
         "background_on_close": True,
+        "tray_enabled": True,
+        "launch_on_startup": False,
     }
 
     def __init__(self, storage_path: Path | None = None) -> None:
