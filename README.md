@@ -15,6 +15,9 @@ Production-oriented Python voice assistant with a `CustomTkinter` desktop GUI, m
 - System automation for applications, files, and web search
 - Command analytics with pandas and NumPy
 - SQLite-backed command memory for recent-history recall
+- Plugin-based skill extension system (built-in time/date plugin)
+- Security guardrails for automation actions (unsafe-input blocking + app allowlist)
+- Structured JSON observability logs and expanded usage metrics
 - Graceful fallback handling for low-confidence or unsupported commands
 - Local math calculation support
 
@@ -42,6 +45,10 @@ jarvis_ai_assistant/
         ├── memory_store.py
         ├── models.py
         ├── nlp_engine.py
+        ├── plugin_system.py
+        ├── plugins/
+        │   ├── __init__.py
+        │   └── time_plugin.py
         ├── preferences_store.py
         ├── reminder_store.py
         └── voice_module.py
@@ -81,6 +88,18 @@ python -m src.jarvis_ai_assistant.main --cli
 .\scripts\build_exe.ps1 -Clean
 ```
 
+## Continuous Integration
+
+- GitHub Actions workflow at `.github/workflows/ci.yml`
+- Runs on push and pull requests to `main`
+- Installs dependencies and executes `python -m unittest discover -s tests -q`
+
+## Observability
+
+- Console logs use readable text format for local debugging
+- Structured logs are written to `logs/jarvis.jsonl` as JSON lines
+- Usage summary includes commands in last 24h, failed-command count, and top actions
+
 ## Environment Variables
 
 - `OPENWEATHER_API_KEY`
@@ -98,11 +117,19 @@ python -m src.jarvis_ai_assistant.main --cli
 1. The Tkinter GUI accepts typed commands or triggers one-shot voice capture.
 2. The voice module converts speech to text when microphone support is available.
 3. The NLP engine classifies the text into an intent using a TF-IDF + Logistic Regression pipeline.
-4. The assistant routes the intent to the correct handler.
+4. The assistant first checks plugin skills, then routes unmatched commands to the core intent handlers.
 5. API and automation modules execute the action.
 6. Reminders are persisted in local SQLite storage, surfaced in the GUI dashboard, and promoted to popup notifications when due.
 7. GUI preferences such as notification behavior and reminder polling are stored locally.
 8. Analytics logs each interaction for later review and surfaces a usage summary in the GUI.
+
+## Plugin Skills
+
+- Place plugin modules in `src/jarvis_ai_assistant/plugins/`
+- Each plugin module must expose a `register()` function that returns an object with:
+  - `name` (string)
+  - `handle(command: str, *, assistant) -> AssistantResponse | None`
+- Return `None` to let normal assistant routing continue.
 
 ## Example Commands
 
@@ -112,6 +139,7 @@ python -m src.jarvis_ai_assistant.main --cli
 - "Set a reminder to call John at 6 PM"
 - "Schedule a meeting tomorrow at 3 PM"
 - "Who is Ada Lovelace"
+- "What time is it"
 
 ## Best Practices
 

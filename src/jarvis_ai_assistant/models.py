@@ -39,6 +39,7 @@ class InteractionRecord:
     confidence: float
     success: bool
     response: str
+    action: str = ""
 
 
 @dataclass(slots=True)

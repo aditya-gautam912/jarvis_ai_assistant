@@ -3,18 +3,57 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+from datetime import datetime
+
+from .config import LOGS_DIR
 
 from .assistant import JarvisAssistant
 from .gui import JarvisGUI
 
 
+class JsonFormatter(logging.Formatter):
+    """Structured JSON formatter for file-based observability logs."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        obs_event = getattr(record, "obs_event", None)
+        if obs_event is not None:
+            payload["event"] = obs_event
+        obs_payload = getattr(record, "obs_payload", None)
+        if obs_payload is not None:
+            payload["payload"] = obs_payload
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=True)
+
+
 def configure_logging() -> None:
-    """Set a consistent log format for development and production debugging."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    """Configure console logging and structured JSON file logging."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     )
+    root_logger.addHandler(console_handler)
+
+    json_handler = logging.FileHandler(LOGS_DIR / "jarvis.jsonl", encoding="utf-8")
+    json_handler.setLevel(logging.INFO)
+    json_handler.setFormatter(JsonFormatter())
+    root_logger.addHandler(json_handler)
 
 
 def run_cli() -> None:

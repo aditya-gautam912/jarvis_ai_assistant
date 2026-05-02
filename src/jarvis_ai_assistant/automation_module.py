@@ -7,6 +7,7 @@ import re
 import subprocess
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import requests
 
@@ -42,30 +43,60 @@ class AutomationModule:
         "command prompt": "cmd.exe",
         "file explorer": "explorer.exe",
     }
+    UNSAFE_INPUT_PATTERN = re.compile(
+        r"""[;&|`$<>]|(?:\b(?:powershell|start-process|cmd(?:\.exe)?\s*/c|bash|sh|rm|del|rmdir|format)\b)""",
+        flags=re.IGNORECASE,
+    )
 
     def open_application(self, application: str) -> AssistantResponse:
         """Open a local application or fallback to a web search."""
-        app_name = application.strip().lower()
-        target = self.APP_ALIASES.get(app_name, app_name)
+        requested = application.strip()
+        if not requested:
+            return AssistantResponse(
+                message="Please specify an application to open.",
+                success=False,
+                action="open_application_invalid",
+            )
+        if self._contains_unsafe_input(requested):
+            return AssistantResponse(
+                message="I blocked that app request because it looked unsafe.",
+                success=False,
+                action="security_blocked",
+                payload={"application": requested},
+            )
+
+        app_name = requested.lower()
+        target = self.APP_ALIASES.get(app_name)
+        if target is None:
+            webbrowser.open(f"https://www.google.com/search?q={quote_plus(requested)}")
+            return AssistantResponse(
+                message=(
+                    f"I only launch allowlisted local apps for safety, so I opened a web search for {requested}."
+                ),
+                success=False,
+                action="open_application_fallback",
+                payload={"application": requested},
+            )
+
         try:
             subprocess.Popen(target)  # noqa: S603
             return AssistantResponse(
-                message=f"Opening {application}.",
+                message=f"Opening {requested}.",
                 action="open_application",
-                payload={"application": application},
+                payload={"application": requested},
             )
         except OSError:
-            webbrowser.open(f"https://www.google.com/search?q={application}")
+            webbrowser.open(f"https://www.google.com/search?q={quote_plus(requested)}")
             return AssistantResponse(
-                message=f"I could not launch {application} directly, so I opened a web search instead.",
+                message=f"I could not launch {requested} directly, so I opened a web search instead.",
                 success=False,
                 action="open_application_fallback",
-                payload={"application": application},
+                payload={"application": requested},
             )
 
     def search_web(self, query: str) -> AssistantResponse:
         """Open a browser search for the user's query."""
-        webbrowser.open(f"https://www.google.com/search?q={query}")
+        webbrowser.open(f"https://www.google.com/search?q={quote_plus(query)}")
         return AssistantResponse(
             message=f"Searching the web for {query}.",
             action="search_web",
@@ -162,6 +193,14 @@ class AutomationModule:
 
     def handle_file_operation(self, query: str) -> AssistantResponse:
         """Process simple file and folder commands."""
+        if self._contains_unsafe_input(query):
+            return AssistantResponse(
+                message="I blocked that file operation because it looked unsafe.",
+                success=False,
+                action="security_blocked",
+                payload={"query": query},
+            )
+
         normalized = query.lower()
 
         if "downloads" in normalized:
@@ -204,3 +243,7 @@ class AutomationModule:
             action="open_path",
             payload={"path": str(path)},
         )
+
+    @classmethod
+    def _contains_unsafe_input(cls, text: str) -> bool:
+        return bool(cls.UNSAFE_INPUT_PATTERN.search(text))

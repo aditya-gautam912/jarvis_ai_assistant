@@ -18,6 +18,7 @@ from src.jarvis_ai_assistant.desktop_integration import StartupManager
 from src.jarvis_ai_assistant.models import AssistantResponse, InteractionRecord
 from src.jarvis_ai_assistant.memory_store import MemoryStore
 from src.jarvis_ai_assistant.nlp_engine import NLPEngine
+from src.jarvis_ai_assistant.plugin_system import PluginManager
 from src.jarvis_ai_assistant.preferences_store import PreferencesStore
 from src.jarvis_ai_assistant.reminder_store import ReminderStore
 from src.jarvis_ai_assistant.voice_module import VoiceModule
@@ -115,6 +116,25 @@ class AutomationModuleTests(unittest.TestCase):
         self.assertFalse(response.success)
         web_open.assert_called_once()
 
+    def test_open_application_unknown_app_is_not_executed(self) -> None:
+        module = AutomationModule()
+        with mock.patch("src.jarvis_ai_assistant.automation_module.subprocess.Popen") as popen_mock, \
+             mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
+            response = module.open_application("unknownapp")
+        self.assertFalse(response.success)
+        popen_mock.assert_not_called()
+        web_open.assert_called_once()
+
+    def test_open_application_blocks_unsafe_input(self) -> None:
+        module = AutomationModule()
+        with mock.patch("src.jarvis_ai_assistant.automation_module.subprocess.Popen") as popen_mock, \
+             mock.patch("src.jarvis_ai_assistant.automation_module.webbrowser.open") as web_open:
+            response = module.open_application("notepad & del C:\\")
+        self.assertFalse(response.success)
+        self.assertEqual(response.action, "security_blocked")
+        popen_mock.assert_not_called()
+        web_open.assert_not_called()
+
     def test_file_operations_create_file_and_folder_in_home(self) -> None:
         module = AutomationModule()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -129,6 +149,12 @@ class AutomationModuleTests(unittest.TestCase):
             self.assertTrue((fake_home / "Desktop" / "jarvis_note.txt").exists())
             self.assertEqual(folder_response.action, "create_folder")
             self.assertTrue((fake_home / "Desktop" / "JarvisFolder").exists())
+
+    def test_file_operation_blocks_unsafe_input(self) -> None:
+        module = AutomationModule()
+        response = module.handle_file_operation("open desktop && del C:\\")
+        self.assertFalse(response.success)
+        self.assertEqual(response.action, "security_blocked")
 
     def test_play_music_opens_platform_search(self) -> None:
         module = AutomationModule()
@@ -215,6 +241,9 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(summary["total_commands"], 2)
         self.assertEqual(summary["average_confidence"], 0.88)
         self.assertEqual(summary["success_rate"], 0.5)
+        self.assertEqual(summary["failed_commands"], 1)
+        self.assertEqual(summary["commands_last_24h"], 0)
+        self.assertIn("top_actions", summary)
 
 
 class ReminderStoreTests(unittest.TestCase):
@@ -284,6 +313,13 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(search[0]["command"], "play believer")
 
 
+class PluginManagerTests(unittest.TestCase):
+    def test_loads_builtin_time_plugin(self) -> None:
+        manager = PluginManager()
+        names = [plugin.name for plugin in manager.plugins]
+        self.assertIn("time_info", names)
+
+
 class AssistantTests(unittest.TestCase):
     def test_calendar_and_file_creation_require_confirmation(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)
@@ -340,6 +376,21 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(response.action, "math_calculation")
         self.assertIn("48", response.message)
         assistant.automation.search_web.assert_not_called()
+
+    def test_plugin_command_is_handled_before_nlp(self) -> None:
+        assistant = JarvisAssistant(enable_voice=False)
+        assistant.plugins = mock.Mock()
+        assistant.nlp = mock.Mock()
+        assistant.plugins.handle_command.return_value = AssistantResponse(
+            message="It is 09:30 AM.",
+            action="plugin_time_info",
+        )
+
+        response = assistant.handle_command("what time is it")
+
+        self.assertEqual(response.action, "plugin_time_info")
+        assistant.plugins.handle_command.assert_called_once_with("what time is it", assistant=assistant)
+        assistant.nlp.predict.assert_not_called()
 
     def test_memory_rules_return_recent_commands(self) -> None:
         assistant = JarvisAssistant(enable_voice=False)

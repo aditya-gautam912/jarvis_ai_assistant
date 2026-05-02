@@ -15,6 +15,7 @@ from .config import integration_status
 from .memory_store import MemoryStore
 from .models import AssistantResponse, InteractionRecord
 from .nlp_engine import NLPEngine
+from .plugin_system import PluginManager
 from .reminder_store import ReminderStore
 from .voice_module import AudioLevelMonitor, VoiceModule
 
@@ -52,6 +53,7 @@ class JarvisAssistant:
         self.analytics = InteractionAnalytics()
         self.reminders = ReminderStore()
         self.memory_store = MemoryStore()
+        self.plugins = PluginManager()
         self.memory: list[dict[str, str]] = self.memory_store.recent()
         self.pending_confirmation: dict[str, object] | None = None
 
@@ -225,6 +227,12 @@ class JarvisAssistant:
         if memory_response is not None:
             self._record_memory(command, memory_response.message)
             return memory_response
+
+        plugin_response = self.plugins.handle_command(command, assistant=self)
+        if plugin_response is not None:
+            self._log_interaction(command, plugin_response.action or "plugin", 1.0, plugin_response)
+            self._record_memory(command, plugin_response.message)
+            return plugin_response
 
         if self.calculator.can_handle(command):
             response = self._handle_calculation(command)
@@ -550,13 +558,27 @@ class JarvisAssistant:
         confidence: float,
         response: AssistantResponse,
     ) -> None:
+        event_time = datetime.now()
+        payload = {
+            "timestamp": event_time.isoformat(timespec="seconds"),
+            "command": command,
+            "intent": intent,
+            "confidence": confidence,
+            "success": response.success,
+            "action": response.action or "",
+        }
+        LOGGER.info(
+            "interaction_event",
+            extra={"obs_event": "assistant_interaction", "obs_payload": payload},
+        )
         self.analytics.log(
             InteractionRecord(
-                timestamp=datetime.now(),
+                timestamp=event_time,
                 command=command,
                 intent=intent,
                 confidence=confidence,
                 success=response.success,
                 response=response.message,
+                action=response.action or "",
             )
         )

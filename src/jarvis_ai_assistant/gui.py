@@ -91,8 +91,14 @@ class JarvisGUI:
         self.root.mainloop()
 
     def _build_layout(self) -> None:
-        container = ctk.CTkFrame(self.root, fg_color="transparent")
-        container.pack(fill="both", expand=True, padx=18, pady=18)
+        container = ctk.CTkScrollableFrame(
+            self.root,
+            fg_color="transparent",
+            corner_radius=0,
+            scrollbar_button_color="#23404f",
+            scrollbar_button_hover_color="#2f5569",
+        )
+        container.pack(fill="both", expand=True, padx=12, pady=12)
         container.grid_columnconfigure(0, weight=3)
         container.grid_columnconfigure(1, weight=2)
         container.grid_rowconfigure(1, weight=1)
@@ -756,11 +762,16 @@ class JarvisGUI:
         summary = self.assistant.usage_summary()
         top_intents = summary.get("top_intents", {})
         top_text = ", ".join(f"{key}: {value}" for key, value in top_intents.items()) or "None"
+        top_actions = summary.get("top_actions", {})
+        action_text = ", ".join(f"{key}: {value}" for key, value in top_actions.items()) or "None"
         details = (
             f"Total commands: {summary.get('total_commands', 0)}\n"
+            f"Commands (24h): {summary.get('commands_last_24h', 0)}\n"
+            f"Failed commands: {summary.get('failed_commands', 0)}\n"
             f"Average confidence: {summary.get('average_confidence', 0.0)}\n"
             f"Success rate: {summary.get('success_rate', 0.0)}\n"
-            f"Top intents: {top_text}"
+            f"Top intents: {top_text}\n"
+            f"Top actions: {action_text}"
         )
         self.analytics_label.configure(text=details)
 
